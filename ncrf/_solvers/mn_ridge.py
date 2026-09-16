@@ -234,12 +234,23 @@ class MNRidge(Solver):
         ``beta`` regularizes the *TRFs*; the two are independent, and only
         ``beta`` is cross-validated.
     dspm
-        Noise-normalize the inverse operator (default). This reproduces the
-        dSPM operator of :cite:`donhauserTwoDistinctNeural2020`, but it rescales
-        each source by its own noise sensitivity, so the resulting ``theta`` is
-        in units of a statistic rather than of source current. Set to ``False``
-        for a plain minimum-norm estimate whose amplitudes are comparable with
-        :class:`ChampLasso`.
+        Noise-normalize the inverse operator, reproducing the dSPM operator of
+        :cite:`donhauserTwoDistinctNeural2020` (default ``False``).
+
+        .. warning::
+            dSPM rescales every source by its own noise sensitivity, which
+            breaks the generative model the rest of the package assumes:
+            ``theta`` no longer satisfies ``meg == lead_field @ theta @
+            covariates.T``, so predictions, ``explained_variance``, ``l2_error``
+            and hence cross-validated selection are all invalid. On the test
+            dataset ``dspm=True`` scores an explained variance of -0.79, against
+            +0.01 for the same fit without it.
+
+            :cite:`donhauserTwoDistinctNeural2020` can use dSPM because it
+            evaluates coherence on spatially filtered component signals and
+            never reconstructs sensor data. Use it here only to inspect a fitted
+            ``theta``, never to select ``beta`` or to compare against
+            :class:`ChampLasso`.
     criterion
         Held-out score to select ``beta`` by; see :func:`select_by_criterion`.
     n_beta
@@ -248,7 +259,7 @@ class MNRidge(Solver):
 
     beta: BetaArg = 'auto'
     snr: float = 3.0
-    dspm: bool = True
+    dspm: bool = False
     criterion: str = 'l2'
     n_beta: int = 20
 
