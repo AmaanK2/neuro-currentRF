@@ -22,6 +22,18 @@ solver = ChampLasso(mu='auto', n_iter=30, n_iterc=10, n_iterf=100)
 result = estimator.fit(data, solver)
 ```
 
+`ChampLasso` estimates the source distribution and the TRFs jointly under a
+sparsity-inducing penalty. `MNRidge` is an alternative solver implementing the
+two-stage estimator of Donhauser & Baillet (2020) — a linear inverse operator
+followed by closed-form ridge regression — for comparison against it; see
+[docs/mn_ridge_solver.md](docs/mn_ridge_solver.md).
+
+```python
+from ncrf import MNRidge
+
+result = estimator.fit(data, MNRidge(beta='auto'))
+```
+
 All solvers return a common predictive `NCRF` in `result.model`; training explained variance
 is available as `result.scores['explained_variance']`. To score other data,
 `result.model.evaluate(data, [explained_variance, l2_error])` predicts once and
