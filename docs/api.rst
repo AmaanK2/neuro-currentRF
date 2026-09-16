@@ -47,6 +47,8 @@ Solvers
     SolverFit
     ChampLasso
     ChampLassoFit
+    MNRidge
+    MNRidgeFit
 
 Metrics
 -------

@@ -16,6 +16,7 @@ TrialData = tuple[FloatArray, FloatArray]
 ObjectiveFunction = Callable[[FloatArray], float]
 GradientFunction = Callable[[FloatArray], FloatArray]
 MuArg = float | Sequence[float] | FloatArray | Literal["auto"]
+BetaArg = float | Sequence[float] | FloatArray | Literal["auto"]
 NoiseArg = mne.Covariance | NDVar
 Scale = Literal["l1", "l2", "spectral"]
 ScaleArg = Scale | None
