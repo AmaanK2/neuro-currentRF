@@ -146,7 +146,38 @@ def print_comparison(outcomes):
         cells = ' '.join(f'{outcome.held_out.get(key, float("nan")):>20.6f}' for key in SHARED_SCORES)
         print(f'{outcome.name:<{width}}  {cells}')
 
-    print('\nVerdict per score:')
+    # Each solver picks its winner by its own criterion: MNRidge by a held-out
+    # prediction score, ChampLasso by its Bayesian cross-fit likelihood. Comparing
+    # the two selections therefore also compares the two selection rules, and
+    # favours whichever one optimizes the score being reported. The best value
+    # each solver's grid contains is free of that asymmetry.
+    print('\nBEST ACHIEVABLE over each grid (removes the selection-criterion asymmetry)')
+    print(f'{"":<{width}}  ' + ' '.join(f'{key:>20}' for key in SHARED_SCORES))
+    best_of_grid = {}
+    for outcome in outcomes:
+        cells = []
+        for key, direction in SHARED_SCORES.items():
+            values = [r.scores[key] for r in outcome.cv_results if key in r.scores]
+            best = (max if direction == 'higher' else min)(values) if values else float('nan')
+            best_of_grid.setdefault(key, {})[outcome.name] = best
+            cells.append(f'{best:>20.6f}')
+        print(f'{outcome.name:<{width}}  ' + ' '.join(cells))
+
+    for key, direction in SHARED_SCORES.items():
+        by_solver = best_of_grid.get(key, {})
+        if len(by_solver) < 2:
+            continue
+        pick = max if direction == 'higher' else min
+        winner = pick(by_solver, key=by_solver.get)
+        selected = [o for o in outcomes if key in o.held_out]
+        if selected:
+            chosen = (max if direction == 'higher' else min)(selected, key=lambda o: o.held_out[key]).name
+            if chosen != winner:
+                print(f'  NOTE: on {key}, {winner} has the better grid value but '
+                      f'{chosen} has the better *selected* value;\n'
+                      f'        the two searches are optimizing different criteria.')
+
+    print('\nVerdict per score (as selected):')
     for key, direction in SHARED_SCORES.items():
         scored = [o for o in outcomes if key in o.held_out]
         if len(scored) < 2:
