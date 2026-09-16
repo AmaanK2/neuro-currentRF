@@ -208,6 +208,33 @@ def test_solve_recovers_a_noiseless_trf():
     np.testing.assert_allclose(fit.theta, theta, rtol=1e-5, atol=1e-7)
 
 
+def test_default_preserves_the_generative_model():
+    """The default fit has to reproduce the data it was fit on.
+
+    dSPM rescales each source by its noise sensitivity, which breaks
+    ``meg == lead_field @ theta @ covariates.T`` and makes every downstream
+    metric meaningless, so it must not be the default.
+    """
+    assert MNRidge().dspm is False
+
+    forward = _forward(n_sensors=8, n_sources=3)
+    rng = np.random.RandomState(6)
+    theta = rng.randn(3, 5)
+    covariates = rng.randn(60, 5)
+    meg = forward.whitened_lead_field @ theta @ covariates.T
+    data = _data([meg], [covariates])
+
+    plain = MNRidge(beta=0.0, snr=1e8).solve(forward, data)
+    normalized = MNRidge(beta=0.0, snr=1e8, dspm=True).solve(forward, data)
+
+    def residual(fit):
+        prediction = forward.whitened_lead_field @ fit.theta @ covariates.T
+        return np.linalg.norm(meg - prediction) / np.linalg.norm(meg)
+
+    np.testing.assert_allclose(residual(plain), 0.0, atol=1e-6)
+    assert residual(normalized) > 0.1
+
+
 def test_solve_pools_segments():
     """Two identical segments have to give the same answer as one of them."""
     forward = _forward()

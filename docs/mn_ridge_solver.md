@@ -31,7 +31,7 @@ result = estimator.fit(data, MNRidge(beta=1.0))
 | --- | --- |
 | `beta` | ridge parameter: a number, an explicit grid, or `'auto'` (default) |
 | `snr` | assumed amplitude SNR, regularizing the *inverse operator* (not cross-validated) |
-| `dspm` | noise-normalize the inverse operator (default `True`) |
+| `dspm` | noise-normalize the inverse operator (default `False`, see below) |
 | `criterion` | held-out score to select `beta` by: `'l2'` (default) or `'explained-variance'` |
 | `n_beta` | number of grid points `beta='auto'` derives |
 
@@ -68,6 +68,21 @@ With `dspm=True` each source is then divided by the norm of its own rows — its
 noise sensitivity, since the data are whitened. Free-orientation sources are
 normalized per source block, so the ratios between orientation components
 survive.
+
+**`dspm` defaults to `False`, and should stay off for anything quantitative.**
+dSPM rescales every source, which breaks the generative model the rest of the
+package assumes — `theta` no longer satisfies `meg == L @ theta @ Eᵀ`, so
+predictions, `explained_variance`, `l2_error`, and therefore cross-validated
+selection of `beta` are all invalid. Measured on the test dataset:
+
+| | explained variance |
+| --- | --- |
+| `MNRidge(beta=1.0, dspm=False)` | **+0.0130** |
+| `MNRidge(beta=1.0, dspm=True)` | **−0.7895** |
+
+The paper can use dSPM because it evaluates coherence on spatially filtered
+component signals and never reconstructs sensor data. Here it is only useful
+for inspecting a fitted `theta`.
 
 Stage 2 — ridge regression. Equations 16-18 of the paper state the solution
 through the SVD of the design matrix, `d_j = s_j / (s_j² + β²)`. `MNRidge`
@@ -128,12 +143,28 @@ one dataset to one set of source-space coefficients.
 If the comparison later needs them, they belong in analysis code operating on
 fitted `NCRF` models, not inside `solve()`.
 
+## First results
+
+On the packaged test dataset (5 s of MEG, TRF to 0.2 s, 9966 sources, 39
+coefficients):
+
+| | time | training explained variance | sources above 1% of peak |
+| --- | --- | --- | --- |
+| `MNRidge(beta='auto')`, 8 candidates, 3 folds | 17.7 s | +0.0047 | 100.0% |
+| `ChampLasso(mu=0.0019444)`, 3 iterations | 5.2 s | +0.0064 | 17.5% |
+
+The dense-versus-sparse contrast is the expected structural difference. The
+explained variances are too small, and the dataset far too short, for the
+comparison to mean anything yet — this only establishes that the two solvers
+run through the same pipeline and produce comparable output.
+
+Cross-validation selected `beta = 9.78` from a grid spanning 0.05 to 506,
+comfortably inside the range rather than at a boundary. Held-out explained
+variance was negative for every smaller `beta`, i.e. the unregularized end
+overfits, as it should.
+
 ## Open questions
 
-- Should `dspm` default to `True`? It reproduces the paper, but rescales each
-  source by its noise sensitivity, so `theta` is in units of a statistic rather
-  than of source current — which makes amplitudes not directly comparable with
-  `ChampLasso`. `dspm=False` gives a plain minimum-norm estimate.
 - Should the depth prior be configurable? It is currently inherited from
   `ForwardModel.mne_initializer` (depth weighting on, exponent 0.8).
 - Is `snr=3.0` a sensible default for this data, and should it be searched
