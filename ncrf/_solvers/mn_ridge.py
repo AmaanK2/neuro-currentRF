@@ -90,11 +90,12 @@ def _inverse_operator(
         Noise-normalize the operator. The data are whitened, so each source's
         noise sensitivity is just the norm of its own row(s).
     subspace
-        Fraction of the resolution-matrix energy to retain (e.g. ``0.999``).
-        The resolution matrix ``K @ L`` has singular values
-        ``r = s ** 2 / (s ** 2 + lambda2)`` in the SVD basis of the lead field;
-        components beyond the smallest set holding ``subspace`` of ``sum(r ** 2)``
-        are dropped, which removes directions the sensors barely constrain.
+        Fraction of the resolution-matrix singular-value spectrum to retain
+        (e.g. ``0.999``, as in the paper). The resolution matrix ``K @ L`` has
+        singular values ``r = s ** 2 / (s ** 2 + lambda2)`` in the SVD basis of
+        the lead field; components beyond the smallest set whose cumulative sum
+        reaches ``subspace`` of ``sum(r)`` are dropped, which removes directions
+        the sensors barely constrain.
         ``None`` keeps all components.
 
     Returns
@@ -116,8 +117,8 @@ def _inverse_operator(
     if subspace is not None:
         if not 0 < subspace <= 1:
             raise ValueError(f"{subspace=}: must be in (0, 1]")
-        energy = np.cumsum((s ** 2 / (s ** 2 + lambda2)) ** 2)
-        n_keep = int(np.searchsorted(energy / energy[-1], subspace) + 1)
+        spectrum = np.cumsum(s ** 2 / (s ** 2 + lambda2))
+        n_keep = int(np.searchsorted(spectrum / spectrum[-1], subspace) + 1)
         gain = gain.copy()
         gain[n_keep:] = 0.
     k = (w[:, None] * vh.T) * gain[None, :] @ u.T
@@ -269,8 +270,8 @@ class MNRidge(Solver):
             ``theta``, never to select ``beta`` or to compare against
             :class:`ChampLasso`.
     subspace
-        Retain this fraction of the resolution-matrix energy in the inverse
-        operator (the paper uses ``0.999``); ``None`` keeps everything (default).
+        Retain this fraction of the resolution-matrix singular-value spectrum
+        in the inverse operator (the paper uses ``0.999``); ``None`` keeps everything (default).
     criterion
         Held-out score to select ``beta`` by; see :func:`select_by_criterion`.
     n_beta
