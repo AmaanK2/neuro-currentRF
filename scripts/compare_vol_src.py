@@ -117,7 +117,7 @@ def main():
     }
     results = {}
     for name, solver in SOLVERS.items():
-        cache = bst / f'oddball_ncrf_vol_{name}.pickle'
+        cache = bst / f'oddball_ncrf_vol_{name}_v051.pickle'
         if cache.exists():
             results[name] = eelbrain.load.unpickle(cache)
         else:
