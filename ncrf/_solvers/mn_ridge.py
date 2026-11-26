@@ -44,7 +44,6 @@ if TYPE_CHECKING:
     from .._crossvalidation import CrossValidation, CVResult
     from .._data import RegressionData
     from .._forward import ForwardModel
-    from .._model import NCRFEstimator
 
 #: Criteria :class:`MNRidge` can select ``beta`` by, mapping to the held-out
 #: score to optimize and whether that score is minimized.
@@ -271,18 +270,17 @@ class MNRidge(Solver):
 
     def search(
             self,
-            estimator: NCRFEstimator,
             data: RegressionData,
             cv: CrossValidation,
     ) -> tuple[MNRidge, list[CVResult]]:
         """Resolve ``beta``, and cross-validate unless it is a fixed number."""
-        candidates = self.candidates(estimator.forward, data)
+        candidates = self.candidates(data.forward, data)
         if _is_number(self.beta):
             return candidates[0], []
-        cv_results = crossvalidate(estimator, data, candidates, cv)
+        cv_results = crossvalidate(data, candidates, cv)
         extension = self._extend_grid(cv_results)
         if extension:
-            cv_results.extend(crossvalidate(estimator, data, extension, cv))
+            cv_results.extend(crossvalidate(data, extension, cv))
         return select_by_criterion(cv_results, self.criterion), cv_results
 
     def _extend_grid(self, cv_results: Sequence[CVResult]) -> tuple[MNRidge, ...]:

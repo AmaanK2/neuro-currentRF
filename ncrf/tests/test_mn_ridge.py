@@ -33,14 +33,15 @@ def _forward(n_sensors=6, n_sources=3, dc=1, seed=0):
 
 
 def _data(meg, covariates):
-    """A dataset carrying just what the solver reads: ``meg`` and ``covariates``."""
-    return RegressionData(
-        meg=list(meg),
-        covariates=list(covariates),
-        design=MagicMock(),
-        sensor_dim=MagicMock(),
-        whitener=np.eye(meg[0].shape[0]),
-    )
+    """A dataset carrying just what the solver reads: ``meg`` and ``covariates``.
+
+    ``RegressionData`` derives its arrays from NDVars and a design; the solver
+    only reads ``responses``, ``covariates`` and the cross-products computed from
+    them, so those are set directly on a bare instance.
+    """
+    data = object.__new__(RegressionData)
+    data.__dict__.update(meg=list(meg), responses=list(meg), covariates=list(covariates))
+    return data
 
 
 def _random_data(forward, n_times=40, n_coefficients=5, n_segments=2, seed=1):
