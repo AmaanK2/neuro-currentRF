@@ -279,7 +279,7 @@ class MNRidge(Solver):
     """
 
     beta: BetaArg = 'auto'
-    snr: float = 3.0
+    snr: float = 30.0
     dspm: bool = False
     subspace: float | None = None
     criterion: str = 'l2'
