@@ -345,3 +345,25 @@ def test_cv_table_marks_the_selected_solver():
 
     assert 'beta' in text
     assert '*' in text
+
+
+def test_subspace_drops_weakly_constrained_components():
+    forward = _forward()
+    full = _inverse_operator(forward, 3.0, dspm=False)
+
+    truncated = _inverse_operator(forward, 3.0, dspm=False, subspace=0.5)
+
+    assert np.linalg.matrix_rank(truncated) < np.linalg.matrix_rank(full)
+    # keeping everything is the plain operator
+    np.testing.assert_allclose(_inverse_operator(forward, 3.0, dspm=False, subspace=1.0), full)
+
+
+def test_subspace_rejects_invalid_fraction():
+    with pytest.raises(ValueError, match='subspace='):
+        _inverse_operator(_forward(), 3.0, dspm=False, subspace=1.5)
+
+
+def test_operator_cache_distinguishes_subspace():
+    forward = _forward()
+
+    assert mn_ridge._operator(forward, 3.0, False, 0.9) is not mn_ridge._operator(forward, 3.0, False, None)

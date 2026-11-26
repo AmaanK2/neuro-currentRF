@@ -67,6 +67,7 @@ def _inverse_operator(
         forward: ForwardModel,
         snr: float,
         dspm: bool,
+        subspace: float | None = None,
 ) -> FloatArray:
     """Linear inverse operator for the whitened lead field, cached per forward model.
 
@@ -88,6 +89,13 @@ def _inverse_operator(
     dspm
         Noise-normalize the operator. The data are whitened, so each source's
         noise sensitivity is just the norm of its own row(s).
+    subspace
+        Fraction of the resolution-matrix energy to retain (e.g. ``0.999``).
+        The resolution matrix ``K @ L`` has singular values
+        ``r = s ** 2 / (s ** 2 + lambda2)`` in the SVD basis of the lead field;
+        components beyond the smallest set holding ``subspace`` of ``sum(r ** 2)``
+        are dropped, which removes directions the sensors barely constrain.
+        ``None`` keeps all components.
 
     Returns
     -------
@@ -104,7 +112,15 @@ def _inverse_operator(
     lambda2 = (s[0] / snr) ** 2
     # With source covariance R = diag(w ** 2) and whitened data (noise = I),
     #     K = R L.T (L R L.T + lambda2 I)^-1 = w * vh.T @ diag(s / (s ** 2 + lambda2)) @ u.T
-    k = (w[:, None] * vh.T) * (s / (s ** 2 + lambda2))[None, :] @ u.T
+    gain = s / (s ** 2 + lambda2)
+    if subspace is not None:
+        if not 0 < subspace <= 1:
+            raise ValueError(f"{subspace=}: must be in (0, 1]")
+        energy = np.cumsum((s ** 2 / (s ** 2 + lambda2)) ** 2)
+        n_keep = int(np.searchsorted(energy / energy[-1], subspace) + 1)
+        gain = gain.copy()
+        gain[n_keep:] = 0.
+    k = (w[:, None] * vh.T) * gain[None, :] @ u.T
     if not dspm:
         return k
     # dSPM: divide each source by the standard deviation of its own noise
@@ -250,6 +266,9 @@ class MNRidge(Solver):
             never reconstructs sensor data. Use it here only to inspect a fitted
             ``theta``, never to select ``beta`` or to compare against
             :class:`ChampLasso`.
+    subspace
+        Retain this fraction of the resolution-matrix energy in the inverse
+        operator (the paper uses ``0.999``); ``None`` keeps everything (default).
     criterion
         Held-out score to select ``beta`` by; see :func:`select_by_criterion`.
     n_beta
@@ -259,6 +278,7 @@ class MNRidge(Solver):
     beta: BetaArg = 'auto'
     snr: float = 3.0
     dspm: bool = False
+    subspace: float | None = None
     criterion: str = 'l2'
     n_beta: int = 20
 
@@ -277,11 +297,17 @@ class MNRidge(Solver):
         candidates = self.candidates(data.forward, data)
         if _is_number(self.beta):
             return candidates[0], []
-        cv_results = crossvalidate(data, candidates, cv)
+        # beta is a sensor-space ridge parameter, independent of the inverse
+        # operator: select it with the plain operator, for which held-out
+        # prediction is valid even when dSPM or a subspace is requested, then
+        # restore the requested operator on the winner.
+        plain = tuple(replace(c, dspm=False, subspace=None) for c in candidates)
+        cv_results = crossvalidate(data, plain, cv)
         extension = self._extend_grid(cv_results)
         if extension:
             cv_results.extend(crossvalidate(data, extension, cv))
-        return select_by_criterion(cv_results, self.criterion), cv_results
+        best = select_by_criterion(cv_results, self.criterion)
+        return replace(best, dspm=self.dspm, subspace=self.subspace), cv_results
 
     def _extend_grid(self, cv_results: Sequence[CVResult]) -> tuple[MNRidge, ...]:
         """Return one additional decade when the winner is on a grid boundary."""
@@ -322,7 +348,7 @@ class MNRidge(Solver):
         fmt = '%.5f'
         for result in results:
             text = fmtxt.stat(result.solver.beta, fmt=fmt)
-            if result.solver == self:
+            if result.solver.beta == self.beta:
                 text += '*'
             table.cell(text)
             table.cell(fmtxt.stat(result.scores['l2_error'], fmt, 1 if result.solver.beta == best['l2'] else 0, 1))
@@ -391,18 +417,18 @@ class MNRidge(Solver):
         logger = logging.getLogger(__name__)
         if verbose:
             logger.info(f'MNRidge: solving with beta={self.beta:g}, snr={self.snr:g}, dspm={self.dspm}')
-        k = _operator(forward, self.snr, self.dspm)
+        k = _operator(forward, self.snr, self.dspm, self.subspace)
         bE, EtE = _pooled_cross_products(data)
         theta = k @ _ridge(bE, EtE, self.beta)
         return MNRidgeFit(theta=theta, beta=float(self.beta))
 
 
-def _operator(forward: ForwardModel, snr: float, dspm: bool) -> FloatArray:
+def _operator(forward: ForwardModel, snr: float, dspm: bool, subspace: float | None = None) -> FloatArray:
     """Look up or build the cached inverse operator for ``forward``."""
-    key = (snr, dspm)
+    key = (snr, dspm, subspace)
     cached = _operator_cache.get(forward)
     if cached is None:
         cached = _operator_cache[forward] = {}
     if key not in cached:
-        cached[key] = _inverse_operator(forward, snr, dspm)
+        cached[key] = _inverse_operator(forward, snr, dspm, subspace)
     return cached[key]
