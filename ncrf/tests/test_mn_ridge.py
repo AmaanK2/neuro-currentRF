@@ -367,3 +367,78 @@ def test_operator_cache_distinguishes_subspace():
     forward = _forward()
 
     assert mn_ridge._operator(forward, 3.0, False, 0.9) is not mn_ridge._operator(forward, 3.0, False, None)
+
+
+def test_sloreta_scalar_formula():
+    forward = _forward(n_sensors=8, n_sources=5, dc=1)
+    plain = _inverse_operator(forward, 3.0, dspm=False)
+    resolution = np.diag(plain @ forward.whitened_lead_field)
+
+    k = _inverse_operator(forward, 3.0, dspm=False, sloreta=True)
+
+    np.testing.assert_allclose(k, plain / np.sqrt(resolution)[:, None], rtol=1e-8)
+
+
+def test_sloreta_free_orientation_uses_block_square_root():
+    forward = _forward(n_sensors=9, n_sources=4, dc=3)
+    L = forward.whitened_lead_field
+    w = forward.mne_initializer.w
+    plain = _inverse_operator(forward, 3.0, dspm=False)
+
+    k = _inverse_operator(forward, 3.0, dspm=False, sloreta=True)
+
+    for i in range(4):
+        block = slice(3 * i, 3 * i + 3)
+        # in the weighted coordinates the resolution block is symmetric PSD
+        resolution = (plain[block] / w[block, None]) @ (L[:, block] * w[block])
+        normalized = (k[block] / w[block, None]) @ (L[:, block] * w[block])
+        np.testing.assert_allclose(normalized, linalg.sqrtm((resolution + resolution.T) / 2).real, atol=1e-8)
+
+
+def test_dspm_and_sloreta_are_exclusive():
+    with pytest.raises(ValueError, match='alternatives'):
+        MNRidge(dspm=True, sloreta=True)
+
+
+def test_snr_must_be_a_number_or_auto():
+    with pytest.raises(ValueError, match='snr='):
+        MNRidge(snr='best')
+
+
+def test_depth_exponent_changes_the_operator():
+    forward = _forward(n_sensors=8, n_sources=6)
+
+    default = _inverse_operator(forward, 3.0, dspm=False)
+    flat = _inverse_operator(forward, 3.0, dspm=False, depth=0.0)
+
+    assert not np.allclose(default, flat)
+    # no depth weighting: plain minimum norm with identity source covariance
+    L = forward.whitened_lead_field
+    lambda2 = (forward.mne_initializer.s[0] / 3.0) ** 2  # same s0 only if weights are unity -> recompute
+    s0 = np.linalg.svd(L, compute_uv=False)[0]
+    np.testing.assert_allclose(flat, L.T @ linalg.inv(L @ L.T + (s0 / 3.0) ** 2 * np.eye(8)), rtol=1e-7, atol=1e-10)
+
+
+def test_depth_must_be_non_negative():
+    with pytest.raises(ValueError, match='depth='):
+        _inverse_operator(_forward(), 3.0, dspm=False, depth=-1.0)
+
+
+def test_gcv_snr_is_larger_for_clean_signal_than_for_noise():
+    forward = _forward(n_sensors=12, n_sources=30)
+    rng = np.random.RandomState(0)
+    clean = forward.whitened_lead_field[:, 4:5] @ rng.randn(1, 6)
+    noise = rng.randn(12, 6)
+
+    assert mn_ridge._gcv_snr(forward, None, clean) > mn_ridge._gcv_snr(forward, None, noise)
+
+
+def test_solve_with_auto_snr_runs_and_scales_with_depth_option():
+    forward = _forward()
+    data = _random_data(forward)
+
+    auto = MNRidge(beta=0.1, snr='auto').solve(forward, data)
+    deep = MNRidge(beta=0.1, snr=3.0, depth=0.0).solve(forward, data)
+
+    assert auto.theta.shape == deep.theta.shape == (3, 5)
+    assert not np.allclose(auto.theta, deep.theta)

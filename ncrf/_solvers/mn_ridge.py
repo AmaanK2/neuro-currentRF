@@ -36,6 +36,7 @@ import numpy as np
 from scipy import linalg
 
 from .._crossvalidation import crossvalidate
+from .._initialization import MNEInitializer
 from .._repr import _theta_repr
 from .._typing import BetaArg, FloatArray
 from .base import Solver, SolverFit
@@ -68,6 +69,9 @@ def _inverse_operator(
         snr: float,
         dspm: bool,
         subspace: float | None = None,
+        *,
+        depth: float | None = None,
+        sloreta: bool = False,
 ) -> FloatArray:
     """Linear inverse operator for the whitened lead field, cached per forward model.
 
@@ -98,6 +102,14 @@ def _inverse_operator(
         the sensors barely constrain.
         ``None`` keeps all components.
 
+    depth
+        Exponent of the depth weighting; ``None`` uses the forward model's
+        default (0.8). ``0`` switches depth weighting's exponent off.
+    sloreta
+        Normalize by each source's own resolution (sLORETA) instead of its noise
+        sensitivity: every source's operator is divided by the square root of the
+        diagonal block of the resolution matrix ``K @ L``.
+
     Returns
     -------
     numpy.ndarray
@@ -108,7 +120,7 @@ def _inverse_operator(
         raise ValueError(f"{snr=}: must be > 0")
     # The initializer already holds the depth weights and the SVD of the
     # depth-weighted lead field, which is exactly what the operator needs.
-    initializer = forward.mne_initializer
+    initializer = _initializer(forward, depth)
     w, u, s, vh = initializer.w, initializer.u, initializer.s, initializer.vh
     lambda2 = (s[0] / snr) ** 2
     # With source covariance R = diag(w ** 2) and whitened data (noise = I),
@@ -122,6 +134,8 @@ def _inverse_operator(
         gain = gain.copy()
         gain[n_keep:] = 0.
     k = (w[:, None] * vh.T) * gain[None, :] @ u.T
+    if sloreta:
+        return _sloreta(k, forward, w)
     if not dspm:
         return k
     # dSPM: divide each source by the standard deviation of its own noise
@@ -130,6 +144,55 @@ def _inverse_operator(
     dc = forward.dc
     noise = np.sqrt((k ** 2).sum(axis=1).reshape(-1, dc).sum(axis=1) / dc)
     return k / np.repeat(noise, dc)[:, None]
+
+
+def _initializer(forward: ForwardModel, depth: float | None) -> MNEInitializer:
+    """Depth weights and lead-field SVD; the forward model's own for the default exponent."""
+    if depth is None:
+        return forward.mne_initializer
+    if depth < 0:
+        raise ValueError(f"{depth=}: must be >= 0")
+    return MNEInitializer(forward.whitened_lead_field, exp=float(depth))
+
+
+def _sloreta(k: FloatArray, forward: ForwardModel, w: FloatArray) -> FloatArray:
+    """Divide each source block by the matrix square root of its resolution block.
+
+    The depth weights ``w`` may differ between the orientation components of a
+    source, so the blocks are formed in the weighted coordinates
+    (``K~ = K / w``, ``L~ = L * w``), where ``K~ @ L~`` is symmetric positive
+    semidefinite, and the result is mapped back with ``w``.
+    """
+    dc = forward.dc
+    n = k.shape[0] // dc
+    kb = (k / w[:, None]).reshape(n, dc, -1)
+    lb = (forward.whitened_lead_field * w[None, :]).reshape(-1, n, dc)
+    resolution = np.einsum('idr,rie->ide', kb, lb)  # diagonal blocks of K~ @ L~
+    resolution = (resolution + resolution.transpose(0, 2, 1)) / 2
+    e, v = np.linalg.eigh(resolution)
+    e = np.maximum(e, np.finfo(float).eps * max(e.max(), 1e-300))
+    inv_sqrt = np.einsum('ide,ie,ife->idf', v, e ** -0.5, v)
+    return np.einsum('idf,ifr->idr', inv_sqrt, kb).reshape(k.shape) * w[:, None]
+
+
+def _gcv_snr(forward: ForwardModel, depth: float | None, b: FloatArray) -> float:
+    """Pick ``snr`` by generalized cross-validation on the sensor-space TRFs ``b``.
+
+    For the minimum-norm operator the hat matrix has eigenvalues
+    ``s ** 2 / (s ** 2 + lambda2)`` in the SVD basis of the lead field, so the
+    GCV score ``||(I - H) b||^2 / tr(I - H) ** 2`` is cheap to scan over ``snr``.
+    """
+    initializer = _initializer(forward, depth)
+    s = initializer.s
+    c2 = ((initializer.u.T @ b) ** 2).sum(axis=1)
+    best, best_score = None, np.inf
+    for snr in np.logspace(0, 3, 31):
+        lambda2 = (s[0] / snr) ** 2
+        shrink = lambda2 / (s ** 2 + lambda2)
+        score = (shrink ** 2 * c2).sum() / max(shrink.sum(), 1e-12) ** 2
+        if score < best_score:
+            best, best_score = float(snr), score
+    return best
 
 
 def _pooled_cross_products(data: RegressionData) -> tuple[FloatArray, FloatArray]:
@@ -246,7 +309,8 @@ class MNRidge(Solver):
         cross-validates a grid from the data (default).
     snr
         Assumed amplitude signal-to-noise ratio, regularizing the inverse
-        operator. Note that this regularizes the *localization*, whereas
+        operator; ``'auto'`` picks it by generalized cross-validation on the
+        sensor-space TRFs. Note that this regularizes the *localization*, whereas
         ``beta`` regularizes the *TRFs*; the two are independent, and only
         ``beta`` is cross-validated.
     dspm
@@ -272,6 +336,10 @@ class MNRidge(Solver):
     subspace
         Retain this fraction of the resolution-matrix singular-value spectrum
         in the inverse operator (the paper uses ``0.999``); ``None`` keeps everything (default).
+    sloreta
+        Use the sLORETA normalization instead of dSPM (alternatives).
+    depth
+        Exponent of the depth weighting (default: the forward model's, 0.8).
     criterion
         Held-out score to select ``beta`` by; see :func:`select_by_criterion`.
     n_beta
@@ -279,13 +347,19 @@ class MNRidge(Solver):
     """
 
     beta: BetaArg = 'auto'
-    snr: float = 30.0
+    snr: float | str = 30.0
     dspm: bool = False
+    sloreta: bool = False
+    depth: float | None = None
     subspace: float | None = None
     criterion: str = 'l2'
     n_beta: int = 20
 
     def __post_init__(self) -> None:
+        if self.dspm and self.sloreta:
+            raise ValueError("dspm and sloreta are alternatives; set at most one")
+        if isinstance(self.snr, str) and self.snr != 'auto':
+            raise ValueError(f"snr={self.snr!r}: expected a number or 'auto'")
         if self.criterion not in CRITERIA:
             raise ValueError(f"criterion={self.criterion!r}: expected one of {sorted(CRITERIA)}")
         if self.n_beta < 1:
@@ -304,13 +378,13 @@ class MNRidge(Solver):
         # operator: select it with the plain operator, for which held-out
         # prediction is valid even when dSPM or a subspace is requested, then
         # restore the requested operator on the winner.
-        plain = tuple(replace(c, dspm=False, subspace=None) for c in candidates)
+        plain = tuple(replace(c, dspm=False, sloreta=False, subspace=None) for c in candidates)
         cv_results = crossvalidate(data, plain, cv)
         extension = self._extend_grid(cv_results)
         if extension:
             cv_results.extend(crossvalidate(data, extension, cv))
         best = select_by_criterion(cv_results, self.criterion)
-        return replace(best, dspm=self.dspm, subspace=self.subspace), cv_results
+        return replace(best, dspm=self.dspm, sloreta=self.sloreta, subspace=self.subspace), cv_results
 
     def _extend_grid(self, cv_results: Sequence[CVResult]) -> tuple[MNRidge, ...]:
         """Return one additional decade when the winner is on a grid boundary."""
@@ -420,18 +494,21 @@ class MNRidge(Solver):
         logger = logging.getLogger(__name__)
         if verbose:
             logger.info(f'MNRidge: solving with beta={self.beta:g}, snr={self.snr:g}, dspm={self.dspm}')
-        k = _operator(forward, self.snr, self.dspm, self.subspace)
         bE, EtE = _pooled_cross_products(data)
-        theta = k @ _ridge(bE, EtE, self.beta)
+        b = _ridge(bE, EtE, self.beta)
+        snr = _gcv_snr(forward, self.depth, b) if self.snr == 'auto' else self.snr
+        k = _operator(forward, snr, self.dspm, self.subspace, depth=self.depth, sloreta=self.sloreta)
+        theta = k @ b
         return MNRidgeFit(theta=theta, beta=float(self.beta))
 
 
-def _operator(forward: ForwardModel, snr: float, dspm: bool, subspace: float | None = None) -> FloatArray:
+def _operator(forward: ForwardModel, snr: float, dspm: bool, subspace: float | None = None, *,
+              depth: float | None = None, sloreta: bool = False) -> FloatArray:
     """Look up or build the cached inverse operator for ``forward``."""
-    key = (snr, dspm, subspace)
+    key = (snr, dspm, subspace, depth, sloreta)
     cached = _operator_cache.get(forward)
     if cached is None:
         cached = _operator_cache[forward] = {}
     if key not in cached:
-        cached[key] = _inverse_operator(forward, snr, dspm, subspace)
+        cached[key] = _inverse_operator(forward, snr, dspm, subspace, depth=depth, sloreta=sloreta)
     return cached[key]
